@@ -13,6 +13,7 @@ import Control.Exception (evaluate)
 
 import Data.Acquire (Acquire, mkAcquire, with)
 import Data.Conduit
+import Control.Applicative
 import qualified Data.Conduit.List as CL
 import Data.Functor.Identity
 import Data.Int
@@ -24,7 +25,7 @@ import Data.Semigroup ((<>))
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
-import Database.Odpi
+import Database.Odpi hiding (rowRep)
 import System.Environment
 import System.IO
 
@@ -55,26 +56,63 @@ main = do
 
 spec :: Connection -> Spec
 spec conn = do
-  describe "beam-oracle" $ do
-    it "can run a query" $ do
-      r <- runQ $ q0 1
-      r `shouldBe` (Just "AC/DC")
+  describe "simple queries:" $ do
+    it "single value" $ do
+      r1 <- runQ $ q0 1
+      r2 <- rawQ "SELECT t0.NAME FROM ARTIST t0 WHERE t0.ARTISTID = 1"
+      r1 `shouldBe` Just (runIdentity $ head r2)
+    it "multiple columns" $ do
+      r1 <- runQ q1
+      r2 <- rawQ "SELECT t0.ARTISTID, t0.NAME FROM ARTIST t0"
+      r1 `shouldBe` r2
+    it "mix of non-null and null columns" $ do
+      r1 <- runQ q2
+      r2 <- rawQ "SELECT t0.EMPLOYEEID, t0.TITLE FROM EMPLOYEE t0"
+      r1 `shouldBe` r2
 
   describe "data types" $ do
     describe "text" $ do
       it "handles UTF-8" $ do
         r <- runQ $ q0 146
         r `shouldBe` (Just "Titãs")
+      it "handles null" $ do
+        r <- fmap (runIdentity . head) $ rawQ $ "select null from dual"
+        r `shouldBe` (Nothing :: Maybe Text)
 
   describe "inner join" $ do
-    it "passes unit tests" $ do
+    it "simple" $ do
+      r1 <- runQ $ runSelectReturningList $ select $ do
+        a <- all_ $ artist chinookDb
+        al <- join_ (album chinookDb) $ \r -> albumArtist r ==. pk a
+        pure (artistId a, albumId al)
+      r2 <- rawQ "SELECT t0.ARTISTID, t1.ALBUMID FROM ARTIST t0 JOIN ALBUM t1 on (t1.ARTISTID = t0.ARTISTID)"
+      r1 `shouldBe` r2
+    it "with table types" $ do
       r <- runQ joinInner1
       (length r) `shouldBe` (347 :: Int)
 
-  describe "left outer join" $ do
-    it "passes unit tests" $ do
-      r <- runQ joinLeft1
-      (length r) `shouldBe` (418 :: Int)
+  describe "left outer join:" $ do
+    it "simple" $ do
+      r1 <- runQ $ runSelectReturningList $ select $ do
+        a <- all_ $ artist chinookDb
+        al <- leftJoin_ (all_ $ album chinookDb) $ \r -> albumArtist r ==. pk a
+        pure (artistId a, albumId al)
+      r2 <- rawQ "SELECT t0.ARTISTID, t1.ALBUMID FROM ARTIST t0 LEFT JOIN ALBUM t1 on (t1.ARTISTID = t0.ARTISTID)"
+      r1 `shouldBe` r2
+    it "with table types" $ do
+      r1 <- rawQ $ B8.unwords [ "SELECT t0.ARTISTID, t0.NAME,"
+                              , "t1.ALBUMID, t1.TITLE, t1.ARTISTID"
+                              , "FROM ARTIST t0 LEFT JOIN ALBUM t1 ON (t1.ARTISTID) = (t0.ARTISTID)"
+                              ]
+      length (r1 :: [(Int32, Text, Maybe Int32, Maybe Text, Maybe Int32)]) `shouldBe` (418 :: Int)
+      let r1' = fmap (\(a, b, mc, md, me) ->
+                        ( Artist a b
+                        , Album <$> mc <*> md <*> fmap ArtistId me
+                        )
+                     ) r1
+      r2 <- runQ joinLeft1
+      (length r2) `shouldBe` (418 :: Int)
+      r2 `shouldBe` r1'
 
   describe "ordering" $ do
     it "works asc" $ do
@@ -190,7 +228,7 @@ runQ q = withConn $ \conn -> runQ' conn q
 
 runQ' :: Connection -> Ora a -> IO a
 runQ' =
-  --runBeamOracle
+  -- runBeamOracle
   runBeamOracleDebug putStrLn
 
 rawQ :: FromRow a => ByteString -> IO [a]
@@ -205,6 +243,16 @@ q0 aid = runSelectReturningOne $ select $ do
   guard_ $ pk a ==. val_ (ArtistId aid)
   pure $ artistName a
 
+q1 :: Ora [(Int32, Text)]
+q1 = runSelectReturningList $ select $ do
+  a <- all_ $ artist chinookDb
+  pure (artistId a, artistName a)
+
+q2 :: Ora [(Int32, Maybe Text)]
+q2 = runSelectReturningList $ select $ do
+  a <- all_ $ employee chinookDb
+  pure (employeeId a, employeeTitle a)
+
 joinInner1 :: Ora [(Artist, Album)]
 joinInner1 = runSelectReturningList $ select $ do
   a <- all_ $ artist chinookDb
@@ -212,7 +260,7 @@ joinInner1 = runSelectReturningList $ select $ do
   pure (a, al)
 
 joinLeft1 :: Ora [(Artist, Maybe Album)]
-joinLeft1 = runSelectReturningList $ select $ do
+joinLeft1 = runSelectReturningList $ select $ do -- limit_ 3 $ offset_ 400 $ do
   a <- all_ $ artist chinookDb
   al <- leftJoin_ (all_ $ album chinookDb) $ \r -> albumArtist r ==. pk a
   pure (a, al)
@@ -247,9 +295,9 @@ aggMax = runSelectReturningOne $ select $
   aggregate_ (\i -> fromMaybe_ 0 $ max_ (invoiceTotal i)) $
   all_ $ invoice chinookDb
 
--- aggAvg :: Ora (Maybe Scientific)
+-- aggAvg :: Ora (Maybe Double)
 -- aggAvg = runSelectReturningOne $ select $
---   aggregate_ (\t -> fromMaybe_ 0 $ avg_ (cast_ (trackMilliseconds t) numericType)) $
+--   aggregate_ (\t -> fromMaybe_ 0 $ avg_ (trackMilliseconds t)) $
 --   all_ $ track chinookDb
 
 agg2Count1 :: Ora [(CustomerId, Int)]

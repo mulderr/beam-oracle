@@ -13,6 +13,7 @@ module Database.Beam.Oracle.Connection
   , Ora(..)
 
   , runBeamOracle, runBeamOracleDebug
+  , rowRep
 
   , OraCommandSyntax(..)
   , OraSelectSyntax(..), OraInsertSyntax(..)
@@ -20,9 +21,11 @@ module Database.Beam.Oracle.Connection
   , OraExpressionSyntax(..)
   ) where
 
+import           Control.Applicative.Free
 import           Control.Exception
 import           Control.Monad.Except
 import           Control.Monad.Reader
+import           Control.Monad.State
 import           Control.Monad.Free.Church
 import           Data.ByteString.Builder
 import qualified Data.ByteString as B
@@ -73,14 +76,23 @@ runBeamOracleDebug logger conn (Ora a) =
 runBeamOracle :: Odpi.Connection -> Ora a -> IO a
 runBeamOracle = runBeamOracleDebug (\_ -> pure ())
 
+rowRep :: FromBackendRowA Oracle a -> [Maybe Odpi.NativeTypeNum]
+rowRep (Pure _) = []
+rowRep (Ap (ParseOneField (_ :: (Maybe x -> f))) a) = (Odpi.nativeTypeFor (Proxy @x)) : rowRep a
+rowRep (Ap (PeekField (_ :: (Maybe x -> f))) a) = rowRep a
+
 defineValuesForRow :: forall a. FromBackendRow Oracle a => Proxy a -> Odpi.Statement -> IO ()
 defineValuesForRow p s = do
+  let fbr = fromBackendRow :: FromBackendRowA Oracle (Maybe a)
   n <- Odpi.stmtGetNumQueryColumns s
-  mapM_ f $ zip [1..n] (rowRep (Proxy @Oracle) p)
+  -- putStrLn $ "query columns: " ++ show n
+  -- putStrLn $ "values needed: " ++ show (valuesNeeded fbr)
+  -- putStrLn $ "rowRep: " ++ show (rowRep fbr)
+  mapM_ f $ zip [1..n] (rowRep fbr)
   where
-    f :: (Word32, AnyField Oracle) -> IO ()
-    f (i, AF pa) =
-      case Odpi.nativeTypeFor pa of
+    f :: (Word32, Maybe Odpi.NativeTypeNum) -> IO ()
+    f (i, mty) =
+      case mty of
         Nothing -> pure ()
         Just ty -> Odpi.defineValueForTy s i ty
 
@@ -96,7 +108,7 @@ instance MonadBeam OraCommandSyntax Oracle Odpi.Connection Ora where
       Odpi.withStatement conn False cmdStr $ \st -> do
         bindValues st vals
         ncol <- Odpi.stmtExecute st Odpi.ModeExecDefault
-        defineValuesForRow (Proxy :: Proxy x) st
+        defineValuesForRow (Proxy @x) st
         runReaderT (runOra (consume $ nextRow st ncol)) (logger, conn)
     where
       bindValues :: Odpi.Statement -> DL.DList Odpi.NativeValue -> IO ()
@@ -105,42 +117,26 @@ instance MonadBeam OraCommandSyntax Oracle Odpi.Connection Ora where
       bindOne st (pos, v) = Odpi.stmtBindValueByPos st pos v
 
 -- action that fetches the next row passed to consume
-nextRow :: FromBackendRow Oracle x => Odpi.Statement -> Word32 -> Ora (Maybe x)
+nextRow :: forall x. FromBackendRow Oracle x => Odpi.Statement -> Word32 -> Ora (Maybe x)
 nextRow st ncol = Ora $ liftIO $ do
   mPageOffset <- Odpi.stmtFetch st
   case mPageOffset of
-    Nothing -> pure Nothing
+    Nothing -> do
+      pure Nothing
     Just _ -> do
-      fields <- mapM (\n -> do
-                        -- qi <- Odpi.stmtGetQueryInfo st n
-                        Odpi.stmtGetQueryValue st n
-                      ) [1..ncol]
-      Just <$> (runF fromBackendRow (\x _ _ -> pure x) step) 0 fields
-
-step :: FromBackendRowF Oracle (Int -> [Odpi.NativeValue] -> IO x)
-  -> Int
-  -> [Odpi.NativeValue]
-  -> IO x
-step (ParseOneField _) curCol [] =
-  throwIO (NotEnoughColumns (curCol + 1))
-step (ParseOneField next) curCol (df:fields) = do
-  d <- fromField df
-  case d of
-    Nothing  -> throwIO $ Odpi.DpiStringException "error parsing field"
-    Just d' -> next d' (curCol + 1) fields
-step (PeekField next) curCol fields@(df:_) = do
-  d <- fromField df
-  case d of
-    Nothing  -> next Nothing curCol fields
-    Just d' -> next (Just d') curCol fields
-step (PeekField next) curCol [] =
-  next Nothing curCol []
-step (CheckNextNNull n next) curCol fields
-  | n > length fields = next False curCol fields
-  | otherwise = do
-      let areNull = all Odpi.isNativeNull (take n fields)
-      next areNull (if areNull then curCol + n else curCol)
-                   (if areNull then drop n fields else fields)
+      fields <- mapM (\n -> Odpi.stmtGetQueryValue st n) [1..ncol]
+      evalStateT (runAp step fromBackendRow) fields
+  where
+    step :: forall a. FromBackendRowF Oracle a -> StateT [Odpi.NativeValue] IO a
+    step (ParseOneField (next :: Maybe res -> a)) = do
+      df:fs <- get
+      put fs
+      case Odpi.isNativeNull df of
+        True -> pure $ next Nothing
+        False -> do
+          d <- liftIO $ fromField df
+          pure $ next $ Just d
+    step (PeekField _) = error "TODO: need PeekField after all"
 
 instance FromBackendRow Oracle SqlNull
 instance FromBackendRow Oracle Bool

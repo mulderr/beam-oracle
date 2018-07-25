@@ -44,6 +44,7 @@ data ArtistT f
   } deriving Generic
 instance Beamable ArtistT
 type Artist = ArtistT Identity; deriving instance Show Artist
+deriving instance Eq Artist
 
 instance Table ArtistT where
   data PrimaryKey ArtistT f = ArtistId (Columnar f Int32)
@@ -51,6 +52,7 @@ instance Table ArtistT where
   primaryKey = ArtistId . artistId
 instance Beamable (PrimaryKey ArtistT)
 type ArtistId = PrimaryKey ArtistT Identity; deriving instance Show ArtistId
+deriving instance Eq ArtistId
 
 -- * Album
 
@@ -62,6 +64,7 @@ data AlbumT f
   } deriving Generic
 instance Beamable AlbumT
 type Album = AlbumT Identity; deriving instance Show Album
+deriving instance Eq Album
 
 instance Table AlbumT where
   data PrimaryKey AlbumT f = AlbumId (Columnar f Int32)

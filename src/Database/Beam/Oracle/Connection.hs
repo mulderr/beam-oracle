@@ -110,7 +110,7 @@ instance MonadBeam OraCommandSyntax Oracle Odpi.Connection Ora where
         unless (needCols <= fromIntegral ncol) $ throwIO $ NotEnoughColumns (fromIntegral ncol) needCols
 
         defineValuesForRow (Proxy @x) st ncol
-        colInfo <- mapM (\n -> Odpi.stmtGetQueryInfo st n) [1..ncol]
+        colInfo <- mapM (Odpi.stmtGetQueryInfo st) [1..ncol]
         runReaderT (runOra (consume $ nextRow st colInfo ncol)) (logger, conn)
     where
       bindValues :: Odpi.Statement -> DL.DList Odpi.NativeValue -> IO ()
@@ -129,7 +129,7 @@ nextRow st colInfo ncol = Ora $ liftIO $ do
   case mPageOffset of
     Nothing -> pure Nothing
     Just _ -> do
-      fields <- mapM (\n -> Odpi.stmtGetQueryValue st n) [1..ncol]
+      fields <- mapM (Odpi.stmtGetQueryValue st) [1..ncol]
       evalStateT (runAp step fromBackendRow) $ zip colInfo fields
   where
     step :: FromBackendRowF Oracle a -> StateT [(Odpi.QueryInfo, Odpi.NativeValue)] IO a

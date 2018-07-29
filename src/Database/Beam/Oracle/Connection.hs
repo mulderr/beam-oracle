@@ -1,3 +1,4 @@
+{-# options_ghc -fno-warn-orphans #-}
 {-# language
     FlexibleContexts
   , FlexibleInstances
@@ -26,7 +27,6 @@ import           Control.Exception
 import           Control.Monad.Except
 import           Control.Monad.Reader
 import           Control.Monad.State
-import           Control.Monad.Free.Church
 import           Data.ByteString.Builder
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
@@ -53,21 +53,20 @@ instance BeamBackend Oracle where
   type BackendFromField Oracle = Odpi.FromField
 
 instance Odpi.FromField SqlNull where
-  fromField (Odpi.NativeNull _) = pure SqlNull
-  fromField v = Odpi.convError "SqlNull" v
+  fromField _ (Odpi.NativeNull _) = pure SqlNull
+  fromField i v = Odpi.convError "SqlNull" i v
 
 newtype Ora a = Ora { runOra :: ReaderT (String -> IO (), Odpi.Connection) IO a }
   deriving (Functor, Applicative, Monad, MonadIO)
 
 data NotEnoughColumns
-  = NotEnoughColumns
-  { _errColCount :: Int
-  } deriving Show
+  = NotEnoughColumns Int Int
+  deriving Show
 
 instance Exception NotEnoughColumns where
-  displayException (NotEnoughColumns colCnt) =
+  displayException (NotEnoughColumns colCnt needCnt) =
     unwords [ "Not enough columns while reading row. Only have"
-            , show colCnt, "column(s)" ]
+            , show colCnt, "column(s) while", show needCnt, "would be needed." ]
 
 runBeamOracleDebug :: (String -> IO ()) -> Odpi.Connection -> Ora a -> IO a
 runBeamOracleDebug logger conn (Ora a) =
@@ -81,20 +80,18 @@ rowRep (Pure _) = []
 rowRep (Ap (ParseOneField (_ :: (Maybe x -> f))) a) = (Odpi.nativeTypeFor (Proxy @x)) : rowRep a
 rowRep (Ap (PeekField (_ :: (Maybe x -> f))) a) = rowRep a
 
-defineValuesForRow :: forall a. FromBackendRow Oracle a => Proxy a -> Odpi.Statement -> IO ()
-defineValuesForRow p s = do
-  let fbr = fromBackendRow :: FromBackendRowA Oracle (Maybe a)
-  n <- Odpi.stmtGetNumQueryColumns s
-  -- putStrLn $ "query columns: " ++ show n
-  -- putStrLn $ "values needed: " ++ show (valuesNeeded fbr)
-  -- putStrLn $ "rowRep: " ++ show (rowRep fbr)
-  mapM_ f $ zip [1..n] (rowRep fbr)
+-- | For each column optionally override the default return type.
+--
+-- Under the hood this uses dpiStmt_defineValue and is required if you're trying to
+-- do non-standard things or to fetch full precision numbers as normally the return
+-- type defaults to double.
+defineValuesForRow :: forall a. FromBackendRow Oracle a
+  => Proxy a -> Odpi.Statement -> Word32 -> IO ()
+defineValuesForRow _ s ncol = do
+  mapM_ f $ zip [1..ncol] (rowRep (fromBackendRow :: FromBackendRowA Oracle (Maybe a)))
   where
     f :: (Word32, Maybe Odpi.NativeTypeNum) -> IO ()
-    f (i, mty) =
-      case mty of
-        Nothing -> pure ()
-        Just ty -> Odpi.defineValueForTy s i ty
+    f (i, mty) = maybe (pure ()) (Odpi.defineValueForTy s i) mty
 
 instance MonadBeam OraCommandSyntax Oracle Odpi.Connection Ora where
   withDatabase = runBeamOracle
@@ -107,35 +104,41 @@ instance MonadBeam OraCommandSyntax Oracle Odpi.Connection Ora where
       logger (B8.unpack cmdStr ++ ";\n-- With values: " ++ show (DL.toList vals))
       Odpi.withStatement conn False cmdStr $ \st -> do
         bindValues st vals
+
         ncol <- Odpi.stmtExecute st Odpi.ModeExecDefault
-        defineValuesForRow (Proxy @x) st
-        runReaderT (runOra (consume $ nextRow st ncol)) (logger, conn)
+        let needCols = valuesNeeded (fromBackendRow :: FromBackendRowA Oracle (Maybe x))
+        unless (needCols <= fromIntegral ncol) $ throwIO $ NotEnoughColumns (fromIntegral ncol) needCols
+
+        defineValuesForRow (Proxy @x) st ncol
+        colInfo <- mapM (\n -> Odpi.stmtGetQueryInfo st n) [1..ncol]
+        runReaderT (runOra (consume $ nextRow st colInfo ncol)) (logger, conn)
     where
       bindValues :: Odpi.Statement -> DL.DList Odpi.NativeValue -> IO ()
       bindValues st vs = mapM_ (bindOne st) $ zip [1..] (DL.toList vs)
 
       bindOne st (pos, v) = Odpi.stmtBindValueByPos st pos v
 
--- action that fetches the next row passed to consume
-nextRow :: forall x. FromBackendRow Oracle x => Odpi.Statement -> Word32 -> Ora (Maybe x)
-nextRow st ncol = Ora $ liftIO $ do
+-- | Action that fetches the next row
+nextRow :: FromBackendRow Oracle x
+  => Odpi.Statement -- ^ statement
+  -> [Odpi.QueryInfo] -- ^ metadata about each column of the result
+  -> Word32 -- ^ total number of columns
+  -> Ora (Maybe x)
+nextRow st colInfo ncol = Ora $ liftIO $ do
   mPageOffset <- Odpi.stmtFetch st
   case mPageOffset of
-    Nothing -> do
-      pure Nothing
+    Nothing -> pure Nothing
     Just _ -> do
       fields <- mapM (\n -> Odpi.stmtGetQueryValue st n) [1..ncol]
-      evalStateT (runAp step fromBackendRow) fields
+      evalStateT (runAp step fromBackendRow) $ zip colInfo fields
   where
-    step :: forall a. FromBackendRowF Oracle a -> StateT [Odpi.NativeValue] IO a
-    step (ParseOneField (next :: Maybe res -> a)) = do
-      df:fs <- get
+    step :: FromBackendRowF Oracle a -> StateT [(Odpi.QueryInfo, Odpi.NativeValue)] IO a
+    step (ParseOneField next) = do
+      (qi,df):fs <- get
       put fs
       case Odpi.isNativeNull df of
         True -> pure $ next Nothing
-        False -> do
-          d <- liftIO $ fromField df
-          pure $ next $ Just d
+        False -> next . Just <$> liftIO (fromField qi df)
     step (PeekField _) = error "TODO: need PeekField after all"
 
 instance FromBackendRow Oracle SqlNull
@@ -155,3 +158,5 @@ instance FromBackendRow Oracle Char
 instance FromBackendRow Oracle B.ByteString
 instance FromBackendRow Oracle T.Text
 instance FromBackendRow Oracle LocalTime
+
+instance (FromField (Exactly a), FromBackendRow Oracle a) => FromBackendRow Oracle (Exactly a)

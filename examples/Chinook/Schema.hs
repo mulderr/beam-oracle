@@ -11,6 +11,8 @@
 -- | Defines a schema for the chinook example database
 module Chinook.Schema where
 
+import qualified Database.Odpi as Odpi
+
 import Database.Beam
 import Database.Beam.Backend.SQL.BeamExtensions
 
@@ -20,6 +22,9 @@ import Data.Time (LocalTime)
 import Data.Monoid
 import Data.String
 import Data.Scientific (Scientific)
+
+
+type Pk32 = Odpi.Exactly Int32
 
 -- * Address
 
@@ -39,7 +44,7 @@ deriving instance Show (AddressMixin Identity)
 
 data ArtistT f
   = Artist
-  { artistId   :: Columnar f Int32
+  { artistId   :: Columnar f Pk32
   , artistName :: Columnar f Text
   } deriving Generic
 instance Beamable ArtistT
@@ -47,7 +52,7 @@ type Artist = ArtistT Identity; deriving instance Show Artist
 deriving instance Eq Artist
 
 instance Table ArtistT where
-  data PrimaryKey ArtistT f = ArtistId (Columnar f Int32)
+  data PrimaryKey ArtistT f = ArtistId (Columnar f Pk32)
     deriving Generic
   primaryKey = ArtistId . artistId
 instance Beamable (PrimaryKey ArtistT)
@@ -58,7 +63,7 @@ deriving instance Eq ArtistId
 
 data AlbumT f
   = Album
-  { albumId     :: Columnar f Int32
+  { albumId     :: Columnar f Pk32
   , albumTitle  :: Columnar f Text
   , albumArtist :: PrimaryKey ArtistT f
   } deriving Generic
@@ -67,7 +72,7 @@ type Album = AlbumT Identity; deriving instance Show Album
 deriving instance Eq Album
 
 instance Table AlbumT where
-  data PrimaryKey AlbumT f = AlbumId (Columnar f Int32)
+  data PrimaryKey AlbumT f = AlbumId (Columnar f Pk32)
     deriving Generic
   primaryKey = AlbumId . albumId
 instance Beamable (PrimaryKey AlbumT)
@@ -81,7 +86,7 @@ artistAlbums = oneToMany_ (album chinookDb) albumArtist
 
 data EmployeeT f
   = Employee
-  { employeeId        :: Columnar f Int32
+  { employeeId        :: Columnar f Pk32
   , employeeLastName  :: Columnar f Text
   , employeeFirstName :: Columnar f Text
   , employeeTitle     :: Columnar f (Maybe Text)
@@ -97,7 +102,7 @@ instance Beamable EmployeeT
 type Employee = EmployeeT Identity; deriving instance Show Employee
 
 instance Table EmployeeT where
-  data PrimaryKey EmployeeT f = EmployeeId (Columnar f Int32)
+  data PrimaryKey EmployeeT f = EmployeeId (Columnar f Pk32)
     deriving Generic
   primaryKey = EmployeeId . employeeId
 instance Beamable (PrimaryKey EmployeeT)
@@ -108,7 +113,7 @@ deriving instance Show (PrimaryKey EmployeeT (Nullable Identity))
 
 data CustomerT f
   = Customer
-  { customerId        :: Columnar f Int32
+  { customerId        :: Columnar f Pk32
   , customerFirstName :: Columnar f Text
   , customerLastName  :: Columnar f Text
   , customerCompany   :: Columnar f (Maybe Text)
@@ -122,7 +127,7 @@ instance Beamable CustomerT
 type Customer = CustomerT Identity; deriving instance Show Customer
 
 instance Table CustomerT where
-  data PrimaryKey CustomerT f = CustomerId (Columnar f Int32)
+  data PrimaryKey CustomerT f = CustomerId (Columnar f Pk32)
     deriving Generic
   primaryKey = CustomerId . customerId
 instance Beamable (PrimaryKey CustomerT)
@@ -134,14 +139,14 @@ deriving instance Eq CustomerId
 
 data GenreT f
   = Genre
-  { genreId   :: Columnar f Int32
+  { genreId   :: Columnar f Pk32
   , genreName :: Columnar f Text
   } deriving Generic
 instance Beamable GenreT
 type Genre = GenreT Identity; deriving instance Show Genre
 
 instance Table GenreT where
-  data PrimaryKey GenreT f = GenreId (Columnar f Int32)
+  data PrimaryKey GenreT f = GenreId (Columnar f Pk32)
     deriving Generic
   primaryKey = GenreId . genreId
 instance Beamable (PrimaryKey GenreT)
@@ -152,7 +157,7 @@ deriving instance Show (PrimaryKey GenreT (Nullable Identity))
 
 data InvoiceT f
   = Invoice
-  { invoiceId       :: Columnar f (SqlSerial Int32) -- Slightly different from the standard chinook schema. Used for illustrative purposes in the docs
+  { invoiceId       :: Columnar f (SqlSerial Pk32) -- Slightly different from the standard chinook schema. Used for illustrative purposes in the docs
   , invoiceCustomer :: PrimaryKey CustomerT f
   , invoiceDate     :: Columnar f LocalTime
   , invoiceBillingAddress :: AddressMixin f
@@ -162,7 +167,7 @@ instance Beamable InvoiceT
 type Invoice = InvoiceT Identity; deriving instance Show Invoice
 
 instance Table InvoiceT where
-  data PrimaryKey InvoiceT f = InvoiceId (Columnar f (SqlSerial Int32)) deriving Generic
+  data PrimaryKey InvoiceT f = InvoiceId (Columnar f (SqlSerial Pk32)) deriving Generic
   primaryKey = InvoiceId . invoiceId
 instance Beamable (PrimaryKey InvoiceT)
 type InvoiceId = PrimaryKey InvoiceT Identity; deriving instance Show InvoiceId
@@ -174,17 +179,17 @@ invoiceLines = oneToMany_ (invoiceLine chinookDb) invoiceLineInvoice
 
 data InvoiceLineT f
   = InvoiceLine
-  { invoiceLineId      :: Columnar f Int32
+  { invoiceLineId      :: Columnar f Pk32
   , invoiceLineInvoice :: PrimaryKey InvoiceT f
   , invoiceLineTrack   :: PrimaryKey TrackT f
   , invoiceLineUnitPrice :: Columnar f Scientific
-  , invoiceLineQuantity :: Columnar f Int32
+  , invoiceLineQuantity :: Columnar f Pk32
   } deriving Generic
 instance Beamable InvoiceLineT
 type InvoiceLine = InvoiceLineT Identity; deriving instance Show InvoiceLine
 
 instance Table InvoiceLineT where
-  data PrimaryKey InvoiceLineT f = InvoiceLineId (Columnar f Int32) deriving Generic
+  data PrimaryKey InvoiceLineT f = InvoiceLineId (Columnar f Pk32) deriving Generic
   primaryKey = InvoiceLineId . invoiceLineId
 instance Beamable (PrimaryKey InvoiceLineT)
 type InvoiceLineId = PrimaryKey InvoiceLineT Identity; deriving instance Show InvoiceLineId
@@ -193,14 +198,14 @@ type InvoiceLineId = PrimaryKey InvoiceLineT Identity; deriving instance Show In
 
 data MediaTypeT f
   = MediaType
-  { mediaTypeId   :: Columnar f Int32
+  { mediaTypeId   :: Columnar f Pk32
   , mediaTypeName :: Columnar f (Maybe Text)
   } deriving Generic
 instance Beamable MediaTypeT
 type MediaType = MediaTypeT Identity; deriving instance Show MediaType
 
 instance Table MediaTypeT where
-  data PrimaryKey MediaTypeT f = MediaTypeId (Columnar f Int32) deriving Generic
+  data PrimaryKey MediaTypeT f = MediaTypeId (Columnar f Pk32) deriving Generic
   primaryKey = MediaTypeId . mediaTypeId
 instance Beamable (PrimaryKey MediaTypeT)
 type MediaTypeId = PrimaryKey MediaTypeT Identity; deriving instance Show MediaTypeId
@@ -209,14 +214,14 @@ type MediaTypeId = PrimaryKey MediaTypeT Identity; deriving instance Show MediaT
 
 data PlaylistT f
   = Playlist
-  { playlistId :: Columnar f Int32
+  { playlistId :: Columnar f Pk32
   , playlistName :: Columnar f (Maybe Text)
   } deriving Generic
 instance Beamable PlaylistT
 type Playlist = PlaylistT Identity; deriving instance Show Playlist
 
 instance Table PlaylistT where
-  data PrimaryKey PlaylistT f = PlaylistId (Columnar f Int32) deriving Generic
+  data PrimaryKey PlaylistT f = PlaylistId (Columnar f Pk32) deriving Generic
   primaryKey = PlaylistId . playlistId
 instance Beamable (PrimaryKey PlaylistT)
 type PlaylistId = PrimaryKey PlaylistT Identity; deriving instance Show PlaylistId
@@ -248,7 +253,7 @@ playlistTrackRelationship =
 
 data TrackT f
   = Track
-  { trackId           :: Columnar f Int32
+  { trackId           :: Columnar f Pk32
   , trackName         :: Columnar f Text
   , trackAlbumId      :: PrimaryKey AlbumT (Nullable f)
   , trackMediaTypeId  :: PrimaryKey MediaTypeT f
@@ -262,7 +267,7 @@ instance Beamable TrackT
 type Track = TrackT Identity; deriving instance Show Track
 
 instance Table TrackT where
-  data PrimaryKey TrackT f = TrackId (Columnar f Int32) deriving Generic
+  data PrimaryKey TrackT f = TrackId (Columnar f Pk32) deriving Generic
   primaryKey = TrackId . trackId
 instance Beamable (PrimaryKey TrackT)
 type TrackId = PrimaryKey TrackT Identity; deriving instance Show TrackId

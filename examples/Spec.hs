@@ -69,6 +69,9 @@ spec conn = do
       r1 <- runQ q2
       r2 <- rawQ "SELECT t0.EMPLOYEEID, t0.TITLE FROM EMPLOYEE t0"
       r1 `shouldBe` r2
+      r1 <- runQ q3
+      r2 <- rawQ "SELECT t0.CUSTOMERID, t0.COMPANY FROM CUSTOMER t0"
+      r1 `shouldBe` r2
 
   describe "data types" $ do
     describe "text" $ do
@@ -104,7 +107,7 @@ spec conn = do
                               , "t1.ALBUMID, t1.TITLE, t1.ARTISTID"
                               , "FROM ARTIST t0 LEFT JOIN ALBUM t1 ON (t1.ARTISTID) = (t0.ARTISTID)"
                               ]
-      length (r1 :: [(Int32, Text, Maybe Int32, Maybe Text, Maybe Int32)]) `shouldBe` (418 :: Int)
+      length (r1 :: [(Pk32, Text, Maybe Pk32, Maybe Text, Maybe Pk32)]) `shouldBe` (418 :: Int)
       let r1' = fmap (\(a, b, mc, md, me) ->
                         ( Artist a b
                         , Album <$> mc <*> md <*> fmap ArtistId me
@@ -228,8 +231,8 @@ runQ q = withConn $ \conn -> runQ' conn q
 
 runQ' :: Connection -> Ora a -> IO a
 runQ' =
-  -- runBeamOracle
-  runBeamOracleDebug putStrLn
+  runBeamOracle
+  -- runBeamOracleDebug putStrLn
 
 rawQ :: FromRow a => ByteString -> IO [a]
 rawQ q = withConn $ \conn -> rawQ' conn q
@@ -237,21 +240,26 @@ rawQ q = withConn $ \conn -> rawQ' conn q
 rawQ' :: FromRow a => Connection -> ByteString -> IO [a]
 rawQ' = querySimple
 
-q0 :: Int32 -> Ora (Maybe Text)
+q0 :: Pk32 -> Ora (Maybe Text)
 q0 aid = runSelectReturningOne $ select $ do
   a <- all_ $ artist chinookDb
   guard_ $ pk a ==. val_ (ArtistId aid)
   pure $ artistName a
 
-q1 :: Ora [(Int32, Text)]
+q1 :: Ora [(Pk32, Text)]
 q1 = runSelectReturningList $ select $ do
   a <- all_ $ artist chinookDb
   pure (artistId a, artistName a)
 
-q2 :: Ora [(Int32, Maybe Text)]
+q2 :: Ora [(Pk32, Maybe Text)]
 q2 = runSelectReturningList $ select $ do
   a <- all_ $ employee chinookDb
   pure (employeeId a, employeeTitle a)
+
+q3 :: Ora [(Pk32, Maybe Text)]
+q3 = runSelectReturningList $ select $ do
+  a <- all_ $ customer chinookDb
+  pure (customerId a, customerCompany a)
 
 joinInner1 :: Ora [(Artist, Album)]
 joinInner1 = runSelectReturningList $ select $ do
@@ -275,9 +283,9 @@ orderDesc = runSelectReturningList $ select $ orderBy_ desc_ $ do
   a <- all_ $ artist chinookDb
   pure $ artistName a
 
-aggCount1 :: Ora (Maybe Int)
+aggCount1 :: Ora (Maybe Pk32)
 aggCount1 = runSelectReturningOne $ select $
-  aggregate_ (\_ -> countAll_) $
+  aggregate_ (\i -> count_ (invoiceId i)) $
   all_ $ invoice chinookDb
 
 aggSum :: Ora (Maybe Scientific)
@@ -295,12 +303,13 @@ aggMax = runSelectReturningOne $ select $
   aggregate_ (\i -> fromMaybe_ 0 $ max_ (invoiceTotal i)) $
   all_ $ invoice chinookDb
 
--- aggAvg :: Ora (Maybe Double)
--- aggAvg = runSelectReturningOne $ select $
---   aggregate_ (\t -> fromMaybe_ 0 $ avg_ (trackMilliseconds t)) $
---   all_ $ track chinookDb
+-- TODO: how to get Scientific?
+aggAvg :: Ora (Maybe Int32)
+aggAvg = runSelectReturningOne $ select $
+  aggregate_ (\t -> fromMaybe_ 0 $ avg_ (trackMilliseconds t)) $
+  all_ $ track chinookDb
 
-agg2Count1 :: Ora [(CustomerId, Int)]
+agg2Count1 :: Ora [(CustomerId, Exactly Int)]
 agg2Count1 = runSelectReturningList $ select $
   aggregate_ (\c -> (group_ c, countAll_)) $ do
     i <- all_ $ invoice chinookDb
@@ -310,7 +319,8 @@ agg2Count1 = runSelectReturningList $ select $
 agg2Sum :: Ora [(CustomerId, Scientific)]
 agg2Sum = runSelectReturningList $ select $
   aggregate_ (\i -> (group_ (invoiceCustomer i), fromMaybe_ 0 $ sum_ (invoiceTotal i))) $
-  filter_ (\i -> invoiceCustomer i ==. CustomerId (val_ 44) ||. invoiceCustomer i ==. CustomerId (val_ 59)) $
+  filter_ (\i -> invoiceCustomer i ==. CustomerId (val_ 44)
+             ||. invoiceCustomer i ==. CustomerId (val_ 59)) $
   all_ $ invoice chinookDb
 
 limit1 :: Integer -> Ora [Text]

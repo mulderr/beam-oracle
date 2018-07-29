@@ -200,7 +200,7 @@ emitValue v = OraSyntax ($ v) (DL.singleton v)
 -- displaying to a user. Embedded 'SQLData' is directly embedded into the
 -- concrete syntax, with a best effort made to escape strings.
 oraRenderSyntaxScript :: OraSyntax -> BL.ByteString
-oraRenderSyntaxScript (OraSyntax s _) =
+oraRenderSyntaxScript (OraSyntax _ _) =
   error "TODO: oraRenderSyntaxScript"
 
 oraSepBy :: OraSyntax -> [OraSyntax] -> OraSyntax
@@ -954,6 +954,10 @@ instance HasSqlValueSyntax OraValueSyntax x => HasSqlValueSyntax OraValueSyntax 
     sqlValueSyntax Nothing = sqlValueSyntax SqlNull
     sqlValueSyntax (Just x) = sqlValueSyntax x
 
+instance (HasSqlValueSyntax OraValueSyntax a, Odpi.FromField (Odpi.Exactly a))
+       => HasSqlValueSyntax OraValueSyntax (Odpi.Exactly a) where
+  sqlValueSyntax (Odpi.Exactly x) = sqlValueSyntax x
+
 fromSqlConstraintAttributes :: SqlConstraintAttributesBuilder -> OraSyntax
 fromSqlConstraintAttributes (SqlConstraintAttributesBuilder timing deferrable) =
   maybe mempty timingBuilder timing <> maybe mempty deferrableBuilder deferrable
@@ -977,7 +981,7 @@ oraOptNumericPrec (Just (prec, Just dec)) = emit "(" <> emit (fromString (show p
 
 
 -- * Equality checks
-#define HAS_ORACLE_EQUALITY_CHECK(ty)                       \
+#define HAS_ORACLE_EQUALITY_CHECK(ty) \
   instance HasSqlEqualityCheck OraExpressionSyntax (ty); \
   instance HasSqlQuantifiedEqualityCheck OraExpressionSyntax (ty);
 
@@ -1002,3 +1006,8 @@ HAS_ORACLE_EQUALITY_CHECK(Day)
 HAS_ORACLE_EQUALITY_CHECK(TimeOfDay)
 HAS_ORACLE_EQUALITY_CHECK(NominalDiffTime)
 HAS_ORACLE_EQUALITY_CHECK(LocalTime)
+
+instance (HasSqlEqualityCheck OraExpressionSyntax a, Odpi.FromField (Odpi.Exactly a))
+       => HasSqlEqualityCheck OraExpressionSyntax (Odpi.Exactly a)
+instance (HasSqlQuantifiedEqualityCheck OraExpressionSyntax a, Odpi.FromField (Odpi.Exactly a))
+       => HasSqlQuantifiedEqualityCheck OraExpressionSyntax (Odpi.Exactly a)

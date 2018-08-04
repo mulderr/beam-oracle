@@ -11,8 +11,6 @@
 -- | Defines a schema for the chinook example database
 module Chinook.Schema where
 
-import qualified Database.Odpi as Odpi
-
 import Database.Beam
 import Database.Beam.Backend.SQL.BeamExtensions
 
@@ -23,8 +21,9 @@ import Data.Monoid
 import Data.String
 import Data.Scientific (Scientific)
 
+import Database.Odpi.FromField (Exactly (..))
 
-type Pk32 = Odpi.Exactly Int32
+type Pk32 = Exactly Int32
 
 -- * Address
 
@@ -134,6 +133,42 @@ instance Beamable (PrimaryKey CustomerT)
 type CustomerId = PrimaryKey CustomerT Identity
 deriving instance Show CustomerId
 deriving instance Eq CustomerId
+
+data CustomerBroken1T f
+  = CustomerBroken1
+  { customerBroken1Id        :: Columnar f Pk32
+  , customerBroken1Email     :: Columnar f (Maybe Text) -- this column is really non-nullable
+  } deriving Generic
+instance Beamable CustomerBroken1T
+type CustomerBroken1 = CustomerBroken1T Identity; deriving instance Show CustomerBroken1
+
+instance Table CustomerBroken1T where
+  data PrimaryKey CustomerBroken1T f = CustomerBroken1Id (Columnar f Pk32)
+    deriving Generic
+  primaryKey = CustomerBroken1Id . customerBroken1Id
+instance Beamable (PrimaryKey CustomerBroken1T)
+type CustomerBroken1Id = PrimaryKey CustomerBroken1T Identity
+deriving instance Show CustomerBroken1Id
+deriving instance Eq CustomerBroken1Id
+
+data CustomerBroken2T f
+  = CustomerBroken2
+  { customerBroken2Id        :: Columnar f Pk32
+  , customerBroken2Company   :: Columnar f Text -- this column is really nullable
+  } deriving Generic
+instance Beamable CustomerBroken2T
+type CustomerBroken2 = CustomerBroken2T Identity; deriving instance Show CustomerBroken2
+
+instance Table CustomerBroken2T where
+  data PrimaryKey CustomerBroken2T f = CustomerBroken2Id (Columnar f Pk32)
+    deriving Generic
+  primaryKey = CustomerBroken2Id . customerBroken2Id
+instance Beamable (PrimaryKey CustomerBroken2T)
+type CustomerBroken2Id = PrimaryKey CustomerBroken2T Identity
+deriving instance Show CustomerBroken2Id
+deriving instance Eq CustomerBroken2Id
+
+
 
 -- * Genre
 
@@ -288,6 +323,8 @@ data ChinookDb entity
   { album         :: entity (TableEntity AlbumT)
   , artist        :: entity (TableEntity ArtistT)
   , customer      :: entity (TableEntity CustomerT)
+  , customerBroken1 :: entity (TableEntity CustomerBroken1T)
+  , customerBroken2 :: entity (TableEntity CustomerBroken2T)
   , employee      :: entity (TableEntity EmployeeT)
   , genre         :: entity (TableEntity GenreT)
   , invoice       :: entity (TableEntity InvoiceT)
@@ -316,6 +353,8 @@ chinookDb =
                      (Customer "CUSTOMERID" "FIRSTNAME" "LASTNAME" "COMPANY"
                                (addressFields "") "PHONE" "FAX" "EMAIL"
                                (EmployeeId "SUPPORTREPID"))
+   , customerBroken1 = modifyTable (\_ -> "CUSTOMER") (CustomerBroken1 "CUSTOMERID" "EMAIL")
+   , customerBroken2 = modifyTable (\_ -> "CUSTOMER") (CustomerBroken2 "CUSTOMERID" "COMPANY")
    , employee = modifyTable (\_ -> "EMPLOYEE")
                     (Employee "EMPLOYEEID" "LASTNAME" "FIRSTNAME" "TITLE"
                               (EmployeeId "REPORTSTO") "BIRTHDATE" "HIREDATE"

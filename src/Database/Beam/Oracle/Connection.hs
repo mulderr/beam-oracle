@@ -53,7 +53,7 @@ instance BeamBackend Oracle where
   type BackendFromField Oracle = Odpi.FromField
 
 instance Odpi.FromField SqlNull where
-  fromField _ (Odpi.NativeNull _) = pure SqlNull
+  fromField _ (Odpi.NativeNull _) = pureOk SqlNull
   fromField i v = Odpi.convError "SqlNull" i v
 
 newtype Ora a = Ora { runOra :: ReaderT (String -> IO (), Odpi.Connection) IO a }
@@ -75,10 +75,20 @@ runBeamOracleDebug logger conn (Ora a) =
 runBeamOracle :: Odpi.Connection -> Ora a -> IO a
 runBeamOracle = runBeamOracleDebug (\_ -> pure ())
 
-rowRep :: FromBackendRowA Oracle a -> [Maybe Odpi.NativeTypeNum]
+data FieldRep
+  = OnlyRep (Maybe Odpi.NativeTypeNum)
+  | AltRep (Maybe Odpi.NativeTypeNum) (Maybe Odpi.NativeTypeNum)
+  deriving (Eq, Show)
+
+rowRep :: FromBackendRowA Oracle a -> [FieldRep]
 rowRep (Pure _) = []
-rowRep (Ap (ParseOneField (_ :: (Maybe x -> f))) a) = (Odpi.nativeTypeFor (Proxy @x)) : rowRep a
-rowRep (Ap (PeekField (_ :: (Maybe x -> f))) a) = rowRep a
+rowRep (Ap (ParseOneField (_ :: Result x -> f)) next) =
+  (OnlyRep $ Odpi.nativeTypeFor (Proxy @x)) : rowRep next
+rowRep (Ap (ParseAlternative (_ :: a -> Result r) (_ :: b -> Result r) _) next) =
+  (AltRep ra rb) : rowRep next
+  where
+    ra = Odpi.nativeTypeFor (Proxy @a)
+    rb = Odpi.nativeTypeFor (Proxy @b)
 
 -- | For each column optionally override the default return type.
 --
@@ -88,10 +98,11 @@ rowRep (Ap (PeekField (_ :: (Maybe x -> f))) a) = rowRep a
 defineValuesForRow :: forall a. FromBackendRow Oracle a
   => Proxy a -> Odpi.Statement -> Word32 -> IO ()
 defineValuesForRow _ s ncol = do
-  mapM_ f $ zip [1..ncol] (rowRep (fromBackendRow :: FromBackendRowA Oracle (Maybe a)))
+  mapM_ f $ zip [1..ncol] (rowRep (fromBackendRow :: FromBackendRowA Oracle (Result a)))
   where
-    f :: (Word32, Maybe Odpi.NativeTypeNum) -> IO ()
-    f (i, mty) = maybe (pure ()) (Odpi.defineValueForTy s i) mty
+    f :: (Word32, FieldRep) -> IO ()
+    f (i, OnlyRep (Just r)) = Odpi.defineValueForTy s i r
+    f _ = pure ()
 
 instance MonadBeam OraCommandSyntax Oracle Odpi.Connection Ora where
   withDatabase = runBeamOracle
@@ -106,7 +117,7 @@ instance MonadBeam OraCommandSyntax Oracle Odpi.Connection Ora where
         bindValues st vals
 
         ncol <- Odpi.stmtExecute st Odpi.ModeExecDefault
-        let needCols = valuesNeeded (fromBackendRow :: FromBackendRowA Oracle (Maybe x))
+        let needCols = valuesNeeded (fromBackendRow :: FromBackendRowA Oracle (Result x))
         unless (needCols <= fromIntegral ncol) $ throwIO $ NotEnoughColumns (fromIntegral ncol) needCols
 
         defineValuesForRow (Proxy @x) st ncol
@@ -130,16 +141,37 @@ nextRow st colInfo ncol = Ora $ liftIO $ do
     Nothing -> pure Nothing
     Just _ -> do
       fields <- mapM (Odpi.stmtGetQueryValue st) [1..ncol]
-      evalStateT (runAp step fromBackendRow) $ zip colInfo fields
+      r <- evalStateT (runAp step fromBackendRow) $ zip colInfo fields
+      case r of
+        Result x -> pure $ Just x
+        Null -> throwIO $ BeamRowError "Failed to parse row"
+        Error x -> throwIO x
   where
     step :: FromBackendRowF Oracle a -> StateT [(Odpi.QueryInfo, Odpi.NativeValue)] IO a
     step (ParseOneField next) = do
       (qi,df):fs <- get
       put fs
       case Odpi.isNativeNull df of
-        True -> pure $ next Nothing
-        False -> next . Just <$> liftIO (fromField qi df)
-    step (PeekField _) = error "TODO: need PeekField after all"
+        True -> pure $ next Null
+        False -> liftIO $ do
+          r <- fromField qi df
+          case r of
+            Ok x -> pure $ next $ Result x
+            Errors es -> pure $ next $ Error $ BeamRowError $ show es
+    step (ParseAlternative f g next) = do
+      (qi,df):fs <- get
+      put fs
+      case Odpi.isNativeNull df of
+        True -> pure $ next Null
+        False -> liftIO $ do
+          r1 <- fromField qi df
+          case r1 of
+            Ok a -> pure $ next $ f a
+            Errors es1 -> do
+              r2 <- fromField qi df
+              case r2 of
+                Ok b -> pure $ next $ g b
+                Errors es2 -> pure $ next $ Error $ BeamRowError $ show es1 ++ " " ++ show es2
 
 instance FromBackendRow Oracle SqlNull
 instance FromBackendRow Oracle Bool

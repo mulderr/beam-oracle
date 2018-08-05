@@ -51,10 +51,10 @@ import           Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as B8L
-import           Data.Functor.Identity
 import           Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import           Data.Tuple.Only
 import qualified Data.Yaml as Y
 import GHC.Generics
 #if !MIN_VERSION_base(4, 11, 0)
@@ -177,7 +177,7 @@ migrateScript steps =
 
 getDbConstraints :: Odpi.Connection -> IO [ Db.SomeDatabasePredicate ]
 getDbConstraints conn = do
-  tbls :: [Text] <- fmap (fmap runIdentity) $ Odpi.querySimple conn (B8.unlines
+  tbls :: [Text] <- fmap (fmap fromOnly) $ Odpi.querySimple conn (B8.unlines
     [ "select table_name"
     , "from user_tables"
     , "where temporary='N' and dropped='NO'"

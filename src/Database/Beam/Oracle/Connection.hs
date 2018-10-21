@@ -144,8 +144,8 @@ nextRow st colInfo ncol = Ora $ liftIO $ do
       r <- evalStateT (runAp step fromBackendRow) $ zip colInfo fields
       case r of
         Result x -> pure $ Just x
-        Null -> throwIO $ BeamRowError "Failed to parse row"
-        Error x -> throwIO x
+        Null -> error "Failed to parse row"
+        Error x -> error $ T.unpack x
   where
     step :: FromBackendRowF Oracle a -> StateT [(Odpi.QueryInfo, Odpi.NativeValue)] IO a
     step (ParseOneField next) = do
@@ -157,7 +157,7 @@ nextRow st colInfo ncol = Ora $ liftIO $ do
           r <- fromField qi df
           case r of
             Ok x -> pure $ next $ Result x
-            Errors es -> pure $ next $ Error $ BeamRowError $ show es
+            Errors es -> pure $ next $ Error $ T.pack $ show es
     step (ParseAlternative f g next) = do
       (qi,df):fs <- get
       put fs
@@ -171,7 +171,7 @@ nextRow st colInfo ncol = Ora $ liftIO $ do
               r2 <- fromField qi df
               case r2 of
                 Ok b -> pure $ next $ g b
-                Errors es2 -> pure $ next $ Error $ BeamRowError $ show es1 ++ " " ++ show es2
+                Errors es2 -> pure $ next $ Error $ T.pack $ show es1 ++ " " ++ show es2
 
 instance FromBackendRow Oracle SqlNull
 instance FromBackendRow Oracle Bool

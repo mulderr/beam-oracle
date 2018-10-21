@@ -51,6 +51,7 @@ import           Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString.Lazy.Char8 as B8L
+import           Data.Monoid (Endo (..), appEndo)
 import           Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -100,9 +101,9 @@ migrationBackend = BeamMigrationBackend
   }
   where
     oraTransact yamlStr action =
-      case Y.decode $ B8.pack yamlStr of
-        Nothing -> pure $ Left "Failed to decode connection string"
-        Just ConnParams{..} -> do
+      case Y.decodeEither' $ B8.pack yamlStr of
+        Left err -> pure $ Left $ show err
+        Right ConnParams{..} -> do
           Odpi.withContext $ \cxt -> do
             Odpi.withConnection' cxt (TE.encodeUtf8 _connUsername)
                                      (TE.encodeUtf8 _connPassword)
